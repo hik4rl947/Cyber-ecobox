@@ -28,6 +28,18 @@ class Game:
             self.nutrition_map_pic = generate("nutrition_map", map_size)
         gv.nutritionMap = np.array(self.nutrition_map_pic)
         self.move = Move(map_size)
+        self.ui.set_species_source(self.move.all_sprites)
+        self.ui.set_reset_callback(self.reset_simulation)
+
+    def reset_simulation(self):
+        self.move.all_sprites.empty()
+        gv.O2Amount = gv.O2Concentration * gv.AirAmount
+        gv.CO2Amount = gv.CO2Concentration * gv.AirAmount
+        gv.bioMass = 0
+        gv.entCnt = 0
+        gv.creatureCnt = 0
+        self.bio_accumulator = 0.0
+        self.ui.reset_history()
 
     def add_grass_at_mouse(self, mouse_pos):
         screen_width = self.screen.get_width()
@@ -62,7 +74,12 @@ class Game:
 
                 if event.type == MOUSEBUTTONUP:
                     if event.button == 1:
-                        self.add_grass_at_mouse(event.pos)
+                        if not self.ui.handle_event(event):
+                            self.add_grass_at_mouse(event.pos)
+                            if event.pos[0] < self.screen.get_width() - self.ui.panel_width:
+                                gv.entCnt += 1
+                if event.type == MOUSEWHEEL:
+                    self.ui.handle_event(event)
                 # if event.type == MOUSEWHEEL:
                 #     if event.y == 1 and self.move.camera_scale_ratio < 2:
                 #         self.move.camera_scale_ratio += 0.1

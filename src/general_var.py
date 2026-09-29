@@ -14,3 +14,4 @@ creatureCnt = 0
 nutritionMap = []
 
 bioMass = 0
+entCnt = 0

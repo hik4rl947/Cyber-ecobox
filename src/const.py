@@ -14,11 +14,11 @@ MAP_SIZE = [2048]
 
 DEFAULT_IMG_SIZES = {
     "grass": (20, 20), 
-    "cow": (20,20),
+    "cow": (20, 20),
     }
 DEFAULT_SIZES = {
     "grass": 1,
-    "cow":3,
+    "cow": 3,
 }
 DEFAULT_COLORS = {
     "grass": (10, 255, 10, 255),

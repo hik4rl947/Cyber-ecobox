@@ -69,12 +69,27 @@ def get_local_density(creatures, radius=20):
 
 
 class Creature(Individual):
+    MUTABLE_GENES = {}
+    GENE_MUTATION_RATE = 0.1
+
     def __init__(self, x, y, type_=""):
         super().__init__(x, y, type_)
         self.atp = self.mass
         self.age = 0
         self.speed = 0
         self.gene = {}
+
+    def _inherit_genes(self):
+        inherited_genes = self.gene.copy()
+        for gene, (minimum, maximum) in self.MUTABLE_GENES.items():
+            value = inherited_genes.get(gene)
+            if not isinstance(value, (int, float)) or random.random() >= self.GENE_MUTATION_RATE:
+                continue
+
+            standard_deviation = (maximum - minimum) / 6
+            mutated_value = random.gauss(value, standard_deviation)
+            inherited_genes[gene] = max(minimum, min(maximum, mutated_value))
+        return inherited_genes
 
     def breed(self):
         self.mass *= 0.3
@@ -89,7 +104,7 @@ class Creature(Individual):
             self.world_pos[1] + math.sin(angle) * distance,
             self.type_,
         )
-        offspring.gene = self.gene.copy()
+        offspring.gene = self._inherit_genes()
         offspring.rebuild_visual()
         offspring.add(*self.groups())
         gv.entCnt += 1
@@ -124,21 +139,26 @@ class Producer(Creature):
     def __init__(self, x, y, type_="grass"):
         self.type_ = type_
         super().__init__(x, y, self.type_)
-        self.gene = {"energy_converting_rate": 2.6,
+        self.gene = {"energy_converting_rate": 1.3,
                      "best_CO2": 0.04, }
         self.mass = 1
         self.atp = 10
+    
+    MUTABLE_GENES = {"best_CO2": (0.01, 0.5)}
 
     def Photosynthesis(self):  # co2 ---> o2
         if gv.CO2Amount <= gv.bioMass or gv.CO2Amount / gv.AirAmount < 0.01:
             self.atp -= self.mass
-        if mp.get_nutrition_value(int(self.world_pos[0]), int(self.world_pos[1])) > 100:
+        if gv.CO2Amount <= 0:
+            self.die()
+        nutri = mp.get_nutrition_value(int(self.world_pos[0]), int(self.world_pos[1]))
+        if nutri > 100:
             delta = math.fabs(gv.CO2Amount / gv.AirAmount - self.gene.get("best_CO2"))
             if delta > 0.25:
                 return
             # 近似为二次
-            dnut = max(0.0, 3 - (delta / 0.1) ** 2) * 1.5
-            self.nutrition += dnut * self.mass / (0.5 * max(1, self.local_density))
+            dnut = nutri/100 * max(0.0, 3 - (delta / 0.1) ** 2) * 1.5
+            self.nutrition += dnut * self.mass / (0.3 * max(1, self.local_density))
             rate = self.gene.get("energy_converting_rate")
             gv.O2Amount += dnut * rate * self.mass/10
             gv.CO2Amount -= dnut * rate * self.mass/10
