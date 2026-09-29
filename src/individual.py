@@ -44,7 +44,7 @@ def calc_distance(a: Individual, b: Individual):
     return math.sqrt((a.pos[0] - b.pos[0]) ** 2 + (a.pos[1] - b.pos[1]) ** 2)
 
 
-def get_local_density(creatures, radius=50):
+def get_local_density(creatures, radius=20):
     creatures = list(creatures)
     buckets = {}
     for creature in creatures:
@@ -92,9 +92,11 @@ class Creature(Individual):
         offspring.gene = self.gene.copy()
         offspring.rebuild_visual()
         offspring.add(*self.groups())
+        gv.entCnt += 1
         return offspring
 
     def die(self):
+        gv.entCnt -= 1
         self.kill()
 
     def aerobic_respiration(self):  # o2 ---> co2
@@ -129,7 +131,7 @@ class Producer(Creature):
 
     def Photosynthesis(self):  # co2 ---> o2
         if gv.CO2Amount <= gv.bioMass or gv.CO2Amount / gv.AirAmount < 0.01:
-            pass
+            self.atp -= self.mass
         if mp.get_nutrition_value(int(self.world_pos[0]), int(self.world_pos[1])) > 100:
             delta = math.fabs(gv.CO2Amount / gv.AirAmount - self.gene.get("best_CO2"))
             if delta > 0.25:

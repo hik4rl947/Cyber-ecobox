@@ -28,7 +28,6 @@ class Game:
             self.nutrition_map_pic = generate("nutrition_map", map_size)
         gv.nutritionMap = np.array(self.nutrition_map_pic)
         self.move = Move(map_size)
-        self.biomass = 0.0
 
     def add_grass_at_mouse(self, mouse_pos):
         screen_width = self.screen.get_width()
@@ -40,7 +39,7 @@ class Game:
         world_y = self.move.cameray - self.move.camera_sizey / 2 + mouse_pos[1]
         grass = Producer(int(world_x), int(world_y))
         self.move.all_sprites.add(grass)
-        self.biomass += grass.mass
+        gv.bioMass += grass.mass
 
     def run(self):
         while 1:
@@ -98,14 +97,14 @@ class Game:
                     for sprite in sprites:
                         if hasattr(sprite, "tick"):
                             sprite.tick()
-                    self.biomass = sum(
+                    gv.bioMass = sum(
                         sprite.mass for sprite in self.move.all_sprites
                         if hasattr(sprite, "mass")
                     )
                     self.bio_accumulator = 0
 
             self.move.run(dt)
-            self.ui.display(dt, self.biomass)
+            self.ui.display(dt)
             pg.display.update()
 
 
