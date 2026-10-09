@@ -28,6 +28,8 @@ class UI(pg.sprite.Sprite):
         self.pinned_metric = None
         self.chart_rect = None
         self.metric_history = {"O2": [], "CO2": [], "Biomass": [], "EntityCnt": []}
+        self.species_population_history = {}
+        self.species_history_elapsed = 0.0
         self.history_elapsed = 0.0
         self.history_interval = 0.5
         self.history_duration = 60.0
@@ -41,6 +43,8 @@ class UI(pg.sprite.Sprite):
     def reset_history(self):
         for history in self.metric_history.values():
             history.clear()
+        self.species_population_history.clear()
+        self.species_history_elapsed = 0.0
         self.history_elapsed = 0.0
         self.hovered_metric = None
         self.pinned_metric = None
@@ -91,6 +95,22 @@ class UI(pg.sprite.Sprite):
                 totals[gene] = (total + numeric_value, count + 1)
 
         return {gene: total / count for gene, (total, count) in totals.items()}
+
+    @staticmethod
+    def _get_population_averages(individuals):
+        totals = {attribute: 0.0 for attribute in ("atp", "nutrition", "mass")}
+        counts = {attribute: 0 for attribute in totals}
+        for individual in individuals:
+            for attribute in totals:
+                value = getattr(individual, attribute, None)
+                if isinstance(value, (int, float)):
+                    totals[attribute] += value
+                    counts[attribute] += 1
+
+        return {
+            attribute: totals[attribute] / counts[attribute] if counts[attribute] else 0.0
+            for attribute in totals
+        }
 
     @staticmethod
     def _truncate_text(font, text, max_width):
@@ -157,7 +177,28 @@ class UI(pg.sprite.Sprite):
             if len(history) > max_samples:
                 del history[:len(history) - max_samples]
 
-    def _draw_metric_chart(self, metric, panel_rect):
+    def _sample_species_populations(self, dt):
+        self.species_history_elapsed += dt
+        if self.species_history_elapsed < self.history_interval:
+            return
+
+        self.species_history_elapsed %= self.history_interval
+        species_counts = {}
+        for sprite in self.species_source or ():
+            species_name = getattr(sprite, "type_", None)
+            if species_name:
+                species_name = str(species_name)
+                species_counts[species_name] = species_counts.get(species_name, 0) + 1
+
+        max_samples = int(self.history_duration / self.history_interval) + 1
+        species_names = self.species_population_history.keys() | species_counts.keys()
+        for species_name in species_names:
+            history = self.species_population_history.setdefault(species_name, [])
+            history.append(float(species_counts.get(species_name, 0)))
+            if len(history) > max_samples:
+                del history[:len(history) - max_samples]
+
+    def _draw_metric_chart(self, metric, panel_rect, history=None, title=None):
         chart_top = 228
         chart_bottom = panel_rect.bottom - self.panel_padding
         chart_height = min(210, chart_bottom - chart_top)
@@ -174,9 +215,10 @@ class UI(pg.sprite.Sprite):
         pg.draw.rect(self.display_surface, (27, 31, 33), self.chart_rect, border_radius=3)
         pg.draw.rect(self.display_surface, (85, 100, 105), self.chart_rect, 1, border_radius=3)
 
-        history = self.metric_history[metric]
-        title = self.tab_font.render(f"{metric} history", True, (220, 235, 240))
-        self.display_surface.blit(title, (self.chart_rect.left + 10, self.chart_rect.top + 8))
+        if history is None:
+            history = self.metric_history[metric]
+        title_surface = self.tab_font.render(title or f"{metric} history", True, (220, 235, 240))
+        self.display_surface.blit(title_surface, (self.chart_rect.left + 10, self.chart_rect.top + 8))
 
         if not history:
             message = self.detail_font.render("Collecting data...", True, (155, 165, 170))
@@ -237,7 +279,7 @@ class UI(pg.sprite.Sprite):
     def _format_chart_value(metric, value):
         if metric in ("O2", "CO2"):
             return f"{value:.2f}%"
-        if metric == "EntityCnt":
+        if metric in ("EntityCnt", "Population"):
             return f"{value:.0f}"
         return f"{value:.1f}"
 
@@ -294,17 +336,51 @@ class UI(pg.sprite.Sprite):
         self.display_surface.blit(heading, (panel_rect.left + self.panel_padding, 68))
         row_y = self._draw_species_tabs(panel_rect, species_names)
         gene_averages = self._get_gene_averages(species[self.selected_species])
+        species_individuals = [
+            sprite for sprite in (self.species_source or ())
+            if getattr(sprite, "type_", None) == self.selected_species
+        ]
+        population_averages = self._get_population_averages(species_individuals)
         content_x = panel_rect.left + self.panel_padding
         content_width = self.panel_width - self.panel_padding * 2
+        chart_bottom = panel_rect.bottom - self.panel_padding
+        chart_height = min(210, chart_bottom - 228)
+        content_bottom = chart_bottom - chart_height - 8
 
         for gene, average in sorted(gene_averages.items()):
-            if row_y + 24 > panel_rect.bottom:
+            if row_y + 24 > content_bottom:
                 return
             value_text = f"{average:.6f}"
             label = self._truncate_text(self.detail_font, f"{gene}: {value_text}", content_width)
             text = self.detail_font.render(label, True, (230, 230, 230))
             self.display_surface.blit(text, (content_x, row_y))
             row_y += 28
+
+        row_y += 4
+        pg.draw.line(
+            self.display_surface,
+            (85, 100, 105),
+            (content_x, row_y),
+            (content_x + content_width, row_y),
+            1,
+        )
+        row_y += 8
+        for label, attribute in (("Avg ATP", "atp"), ("Avg Nutrition", "nutrition"), ("Avg Mass", "mass")):
+            if row_y + 20 > content_bottom:
+                break
+            value = population_averages[attribute]
+            text = self.detail_font.render(f"{label}: {value:.1f}", True, (150, 210, 190))
+            self.display_surface.blit(text, (content_x, row_y))
+            row_y += 22
+
+    def _draw_species_population_chart(self, panel_rect):
+        history = self.species_population_history.get(self.selected_species, [])
+        self._draw_metric_chart(
+            "Population",
+            panel_rect,
+            history=history,
+            title=f"{self.selected_species} population",
+        )
 
     def handle_event(self, event):
         if event.type == pg.MOUSEWHEEL:
@@ -352,6 +428,7 @@ class UI(pg.sprite.Sprite):
 
     def display(self, dt):
         self._frame_dt = dt
+        self._sample_species_populations(dt)
         self._draw_toolbar()
         panel_rect = self._get_panel_rect()
 
@@ -370,6 +447,8 @@ class UI(pg.sprite.Sprite):
         else:
             self.chart_rect = None
             self._draw_biology_data(panel_rect)
+            if self.selected_species is not None:
+                self._draw_species_population_chart(panel_rect)
 
         self.update(dt)
 

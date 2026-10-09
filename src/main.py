@@ -6,7 +6,7 @@ from movements import Move
 from UI import UI
 from maps import *
 import general_var as gv
-from individual import Herbivorous, Producer, get_local_density
+from individual import Carnivore, Herbivorous, Producer, get_local_density, get_population_centers
 import random
 
 
@@ -28,6 +28,14 @@ class Game:
             self.nutrition_map_pic = generate("nutrition_map", map_size)
         gv.nutritionMap = np.array(self.nutrition_map_pic)
         self.move = Move(map_size)
+        for _ in range(10):
+            cow = Herbivorous(
+                random.randrange(self.move.mapSize),
+                random.randrange(self.move.mapSize),
+            )
+            self.move.all_sprites.add(cow)
+            gv.entCnt += 1
+            gv.bioMass += cow.mass
         self.ui.set_species_source(self.move.all_sprites)
         self.ui.set_reset_callback(self.reset_simulation)
 
@@ -111,8 +119,19 @@ class Game:
                         sprite for sprite in sprites
                         if hasattr(sprite, "world_pos") and hasattr(sprite, "mass")
                     )
+                    herbivores = [sprite for sprite in sprites if isinstance(sprite, Herbivorous)]
+                    grasses = [sprite for sprite in sprites if isinstance(sprite, Producer)]
+                    predators = [sprite for sprite in sprites if isinstance(sprite, Carnivore)]
+                    herd_positions = [(herbivore, tuple(herbivore.world_pos)) for herbivore in herbivores]
+                    population_centers = get_population_centers(
+                        herbivores, Herbivorous.POPULATION_RADIUS
+                    )
                     for sprite in sprites:
-                        if hasattr(sprite, "tick"):
+                        if isinstance(sprite, Herbivorous):
+                            sprite.tick(
+                                population_centers[sprite], grasses, herd_positions, predators
+                            )
+                        elif hasattr(sprite, "tick"):
                             sprite.tick()
                     gv.bioMass = sum(
                         sprite.mass for sprite in self.move.all_sprites

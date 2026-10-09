@@ -68,6 +68,37 @@ def get_local_density(creatures, radius=20):
         creature.local_density = max(1, density)
 
 
+def get_population_centers(herbivores, radius=300):
+    herbivores = list(herbivores)
+    if radius <= 0:
+        return {herbivore: tuple(herbivore.world_pos) for herbivore in herbivores}
+
+    buckets = {}
+    for herbivore in herbivores:
+        cell = (int(herbivore.world_pos[0] // radius), int(herbivore.world_pos[1] // radius))
+        buckets.setdefault(cell, []).append(herbivore)
+
+    radius_squared = radius * radius
+    centers = {}
+    for herbivore in herbivores:
+        cell_x = int(herbivore.world_pos[0] // radius)
+        cell_y = int(herbivore.world_pos[1] // radius)
+        nearby = []
+        for x in range(cell_x - 1, cell_x + 2):
+            for y in range(cell_y - 1, cell_y + 2):
+                for neighbor in buckets.get((x, y), ()):
+                    dx = herbivore.world_pos[0] - neighbor.world_pos[0]
+                    dy = herbivore.world_pos[1] - neighbor.world_pos[1]
+                    if dx * dx + dy * dy <= radius_squared:
+                        nearby.append(neighbor)
+
+        centers[herbivore] = (
+            sum(neighbor.world_pos[0] for neighbor in nearby) / len(nearby),
+            sum(neighbor.world_pos[1] for neighbor in nearby) / len(nearby),
+        )
+    return centers
+
+
 class Creature(Individual):
     MUTABLE_GENES = {}
     GENE_MUTATION_RATE = 0.1
@@ -105,6 +136,8 @@ class Creature(Individual):
             self.type_,
         )
         offspring.gene = self._inherit_genes()
+        if hasattr(offspring, "speed"):
+            offspring.speed = offspring.gene.get("speed", offspring.speed)
         offspring.rebuild_visual()
         offspring.add(*self.groups())
         gv.entCnt += 1
@@ -115,12 +148,13 @@ class Creature(Individual):
         self.kill()
 
     def aerobic_respiration(self):  # o2 ---> co2
-        if self.nutrition > self.mass and gv.O2Amount > self.mass:  #有氧
-            self.nutrition -= self.mass*1.2
-            self.atp += self.mass*10
-            gv.O2Amount -= self.mass
-            gv.CO2Amount += self.mass
-        elif self.nutrition > self.mass > gv.O2Amount:  #无氧
+        rate = 1 / (0.2 * self.atp / self.mass+1)
+        if self.nutrition > 1.2*self.mass and gv.O2Amount > self.mass:  # 有氧
+            self.nutrition -= self.mass*1.2*rate
+            self.atp += self.mass*10*rate
+            gv.O2Amount -= self.mass*rate
+            gv.CO2Amount += self.mass*rate
+        elif self.nutrition > self.mass > gv.O2Amount:  # 无氧
             self.nutrition -= self.mass
             self.atp += self.mass*5
 
@@ -208,19 +242,26 @@ class Decomposer(Creature):
 
 
 class Herbivorous(Consumer):
+    POPULATION_RADIUS = 300
+    SEPARATION_RADIUS = 30
+
     def __init__(self, x, y, type_="cow"):
         super().__init__(x, y, type_)
         self.type_ = type_
         self.gene = {"speed": 1,
-                     "min_atp_to_eat": 50}
+                     "min_nutrition_to_eat": 50,
+                     "forage_radius": 300,}
+        self.speed = self.gene.get("speed")
         self.mass = 5
         self.atp = 100
         self.nutrition = 100
         self.size = self.default_size
         self.rebuild_visual()
 
+    MUTABLE_GENES = {"speed": (0.1, 3)}
+
     def _random_step(self):
-        speed = max(1, int(self.gene.get("speed", 1)))
+        speed = max(0.1, self.speed)
         axis = random.choice([0, 1])
         dx, dy = 0, 0
         if axis == 0:
@@ -229,13 +270,109 @@ class Herbivorous(Consumer):
             dy = random.choice([-speed, speed])
         return dx, dy
 
-    def tick(self, *args):
-        dx, dy = self._random_step()
-        self.move_world(dx, dy)
-        self.age += 1
+    def _step_towards(self, target):
+        dx = target[0] - self.world_pos[0]
+        dy = target[1] - self.world_pos[1]
+        distance = math.hypot(dx, dy)
+        if distance == 0:
+            return 0, 0
+        speed = max(0.1, self.speed)
+        step = min(speed, distance)
+        return dx * step / distance, dy * step / distance
 
-    def update(self, dt):
-        self.tick(dt)
+    def _weighted_direction(self, target, weight):
+        dx = target[0] - self.world_pos[0]
+        dy = target[1] - self.world_pos[1]
+        distance = math.hypot(dx, dy)
+        if distance == 0:
+            return 0, 0
+        strength = self.speed * weight
+        return dx * strength / distance, dy * strength / distance
+
+    def _avoid_predators(self):
+        return 0, 0
+
+    def _separation_vector(self, herd_positions):
+        repel_x = 0.0
+        repel_y = 0.0
+        for herbivore, position in herd_positions:
+            if herbivore is self:
+                continue
+            dx = self.world_pos[0] - position[0]
+            dy = self.world_pos[1] - position[1]
+            distance = math.hypot(dx, dy)
+            if distance == 0:
+                angle = random.uniform(0, 2 * math.pi)
+                repel_x += math.cos(angle)
+                repel_y += math.sin(angle)
+            elif distance < self.SEPARATION_RADIUS:
+                strength = (self.SEPARATION_RADIUS - distance) / self.SEPARATION_RADIUS
+                repel_x += dx / distance * strength
+                repel_y += dy / distance * strength
+
+        repel_length = math.hypot(repel_x, repel_y)
+        if repel_length == 0:
+            return 0, 0
+        return repel_x / repel_length * self.speed, repel_y / repel_length * self.speed
+
+    def consume(self, grass):
+        dnut = grass.nutrition * grass.mass * 0.2
+        grass.die()
+        self.nutrition += dnut
+
+        if self.nutrition > self.mass * 1.5 and self.mass < 15:
+            self.mass += 1
+            self.atp -= self.mass
+            self.nutrition -= self.mass
+            self.size = self.default_size * (1 + int(self.mass * 0.1))
+            self.rebuild_visual()
+
+    def move(self, population_center, grasses, herd_positions, predators):
+        dx, dy = self._random_step()
+        predator_dx, predator_dy = self._avoid_predators()
+        dx += predator_dx * self.speed
+        dy += predator_dy * self.speed
+
+        if self.nutrition < self.gene.get("min_nutrition_to_eat"):
+            nearby_grasses = (
+                grass for grass in grasses
+                if calc_distance(self, grass) <= self.gene.get("forage_radius")
+            )
+            nearest_grass = min(nearby_grasses, key=lambda grass: calc_distance(self, grass), default=None)
+            if nearest_grass is not None:
+                forage_dx, forage_dy = self._weighted_direction(nearest_grass.world_pos, 2)
+                dx += forage_dx
+                dy += forage_dy
+
+        if population_center is not None:
+            center_dx, center_dy = self._weighted_direction(population_center, 0.5)
+            dx += center_dx
+            dy += center_dy
+
+        separation_dx, separation_dy = self._separation_vector(herd_positions)
+        dx += separation_dx
+        dy += separation_dy
+        self.atp -= math.hypot(dx, dy) * self.speed
+        return dx, dy
+
+    def tick(self, population_center=None, grasses=(), herd_positions=(), predators=()):
+        # move
+        dx, dy = self.move(population_center, grasses, herd_positions, predators)
+        super().tick(dx, dy)
+
+        # consume grass if close enough
+        for grass in grasses:
+            if calc_distance(self, grass) <= self.size + grass.size:
+                self.consume(grass)
+                break
+        # 潜在优化：每帧记录 nearby grasses，避免每帧都遍历所有草
+
+        # breed
+        if self.atp >= 500 and self.nutrition >= 50:
+            self.breed()
+
+        if self.age >= 300:
+            self.die()
 
 
 class Carnivore(Consumer):
