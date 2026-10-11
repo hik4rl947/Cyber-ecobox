@@ -5,13 +5,20 @@ pg.init()
 WINDOW_SIZE_ACCEPTED = pg.display.list_modes()
 WINDOW_SIZE_FULL = WINDOW_SIZE_ACCEPTED[0]
 
-
 BACK_GROUND_COLOR = (20, 20, 20)
 
 IMG_PATH = "../pic/"
 
 MAP_SIZE = [2048]
 
+# spawning
+INITIAL_GRASS_COUNT = 30
+GRASS_SPAWN_INTERVAL = 2.0
+
+INITIAL_HERBIVORE_COUNT = 10
+
+
+# default settings
 DEFAULT_IMG_SIZES = {
     "grass": (20, 20), 
     "cow": (20, 20),

@@ -30,6 +30,8 @@ class UI(pg.sprite.Sprite):
         self.pinned_metric = None
         self.chart_rect = None
         self.metric_history = {"O2": [], "CO2": [], "Biomass": [], "EntityCnt": []}
+        self.species_metric_history = {"Biomass": {}, "EntityCnt": {}}
+        self.species_metric_colors = {}
         self.species_population_history = {}
         self.species_history_elapsed = 0.0
         self.history_elapsed = 0.0
@@ -45,6 +47,9 @@ class UI(pg.sprite.Sprite):
     def reset_history(self):
         for history in self.metric_history.values():
             history.clear()
+        for species_histories in self.species_metric_history.values():
+            species_histories.clear()
+        self.species_metric_colors.clear()
         self.species_population_history.clear()
         self.species_history_elapsed = 0.0
         self.history_elapsed = 0.0
@@ -159,7 +164,7 @@ class UI(pg.sprite.Sprite):
             self.display_surface.blit(reset_text, reset_text.get_rect(center=self.reset_button_rect.center))
 
     @staticmethod
-    def _get_overall_metrics():
+    def _get_overall_metrics(species_counts=None):
         air_amount = max(gv.AirAmount, 1)
         o2_value = gv.O2Amount / air_amount * 100
         co2_value = gv.CO2Amount / air_amount * 100
@@ -167,7 +172,7 @@ class UI(pg.sprite.Sprite):
             "O2": o2_value,
             "CO2": co2_value,
             "Biomass": gv.bioMass,
-            "EntityCnt": gv.entCnt,
+            "EntityCnt": sum(species_counts.values()) if species_counts is not None else gv.entCnt,
         }
 
     def _draw_overall_data(self, metrics):
@@ -186,7 +191,34 @@ class UI(pg.sprite.Sprite):
             return f"{value / 1_000:.3f}K"
         return f"{value:.1f}"
 
-    def _sample_metrics(self, values):
+    def _get_species_metrics(self):
+        species_metrics = {
+            "Biomass": {},
+            "EntityCnt": {},
+        }
+        species_metric_colors = getattr(self, "species_metric_colors", None)
+        if species_metric_colors is None:
+            species_metric_colors = self.species_metric_colors = {}
+        for sprite in getattr(self, "species_source", None) or ():
+            species_name = getattr(sprite, "type_", None)
+            if not species_name:
+                continue
+            species_name = str(species_name)
+            species_metrics["EntityCnt"][species_name] = (
+                species_metrics["EntityCnt"].get(species_name, 0) + 1
+            )
+            mass = getattr(sprite, "mass", None)
+            if isinstance(mass, (int, float)):
+                species_metrics["Biomass"][species_name] = (
+                    species_metrics["Biomass"].get(species_name, 0) + mass
+                )
+
+            if species_name not in species_metric_colors:
+                color = getattr(sprite, "default_color", DEFAULT_COLORS.get(species_name, (220, 220, 220)))
+                species_metric_colors[species_name] = tuple(color[:3])
+        return species_metrics
+
+    def _sample_metrics(self, values, species_metrics=None):
         self.history_elapsed += self._frame_dt
         if self.history_elapsed < self.history_interval:
             return
@@ -199,18 +231,29 @@ class UI(pg.sprite.Sprite):
             if len(history) > max_samples:
                 del history[:len(history) - max_samples]
 
-    def _sample_species_populations(self, dt):
+        if species_metrics is None:
+            species_metrics = self._get_species_metrics()
+
+        for metric, current_values in species_metrics.items():
+            histories = self.species_metric_history[metric]
+            species_names = histories.keys() | current_values.keys()
+            for species_name in species_names:
+                history = histories.get(species_name)
+                if history is None:
+                    history = [0.0] * max(0, len(self.metric_history[metric]) - 1)
+                    histories[species_name] = history
+                history.append(float(current_values.get(species_name, 0)))
+                if len(history) > max_samples:
+                    del history[:len(history) - max_samples]
+
+    def _sample_species_populations(self, dt, species_counts=None):
         self.species_history_elapsed += dt
         if self.species_history_elapsed < self.history_interval:
             return
 
         self.species_history_elapsed %= self.history_interval
-        species_counts = {}
-        for sprite in self.species_source or ():
-            species_name = getattr(sprite, "type_", None)
-            if species_name:
-                species_name = str(species_name)
-                species_counts[species_name] = species_counts.get(species_name, 0) + 1
+        if species_counts is None:
+            species_counts = self._get_species_metrics()["EntityCnt"]
 
         max_samples = int(self.history_duration / self.history_interval) + 1
         species_names = self.species_population_history.keys() | species_counts.keys()
@@ -242,15 +285,39 @@ class UI(pg.sprite.Sprite):
         title_surface = self.tab_font.render(title or f"{metric} history", True, (220, 235, 240))
         self.display_surface.blit(title_surface, (self.chart_rect.left + 10, self.chart_rect.top + 8))
 
-        if not history:
+        species_series = None
+        if metric in self.species_metric_history:
+            species_series = {
+                name: values[-(round(self.chart_visible_duration / self.history_interval) + 1):]
+                for name, values in self.species_metric_history[metric].items()
+            }
+            species_series = {name: values for name, values in species_series.items() if values}
+
+        if species_series is not None and not species_series:
+            message = self.detail_font.render("Collecting data...", True, (155, 165, 170))
+            self.display_surface.blit(message, message.get_rect(center=self.chart_rect.center))
+            return
+        if species_series is None and not history:
             message = self.detail_font.render("Collecting data...", True, (155, 165, 170))
             self.display_surface.blit(message, message.get_rect(center=self.chart_rect.center))
             return
 
         visible_sample_count = round(self.chart_visible_duration / self.history_interval) + 1
-        chart_history = history[-visible_sample_count:]
-        minimum = min(chart_history)
-        maximum = max(chart_history)
+        if species_series is None:
+            chart_history = history[-visible_sample_count:]
+            series = None
+            all_values = chart_history
+        else:
+            species_series = {
+                name: values[-visible_sample_count:]
+                for name, values in species_series.items()
+            }
+            series = species_series
+            all_values = [value for values in series.values() for value in values]
+            chart_history = max(series.values(), key=len)
+
+        minimum = min(all_values)
+        maximum = max(all_values)
         if maximum == minimum:
             padding = max(abs(maximum) * 0.02, 1.0) / 2
             minimum -= padding
@@ -261,9 +328,9 @@ class UI(pg.sprite.Sprite):
         y_axis_label_width = 68
         graph = pg.Rect(
             self.chart_rect.left + y_axis_label_width + 8,
-            self.chart_rect.top + 42,
+            self.chart_rect.top + (58 if series is not None else 42),
             self.chart_rect.width - y_axis_label_width - 22,
-            self.chart_rect.height - 76,
+            self.chart_rect.height - (92 if series is not None else 76),
         )
         if graph.width <= 0 or graph.height <= 0:
             return
@@ -290,12 +357,47 @@ class UI(pg.sprite.Sprite):
             self.display_surface.blit(message, message.get_rect(center=graph.center))
             return
 
+        if series is not None:
+            self._draw_species_metric_legend(series)
+            for species_name, species_history in series.items():
+                self._draw_chart_series(
+                    species_history,
+                    graph,
+                    minimum,
+                    value_range,
+                    self.species_metric_colors.get(species_name, (220, 220, 220)),
+                )
+        else:
+            self._draw_chart_series(chart_history, graph, minimum, value_range, (90, 210, 235))
+
+    def _draw_chart_series(self, history, graph, minimum, value_range, color):
+        if len(history) < 2:
+            return
         points = []
-        for index, value in enumerate(chart_history):
-            x = graph.left + round(index * graph.width / (len(chart_history) - 1))
+        for index, value in enumerate(history):
+            x = graph.left + round(index * graph.width / (len(history) - 1))
             y = graph.bottom - round((value - minimum) / value_range * graph.height)
             points.append((x, y))
-        pg.draw.lines(self.display_surface, (90, 210, 235), False, points, 2)
+        pg.draw.lines(self.display_surface, color, False, points, 2)
+
+    def _draw_species_metric_legend(self, series):
+        x = self.chart_rect.left + 10
+        y = self.chart_rect.top + 32
+        right = self.chart_rect.right - 10
+        line_height = self.detail_font.get_linesize() + 2
+        for species_name in sorted(series):
+            label = self._truncate_text(self.detail_font, species_name, 90)
+            label_surface = self.detail_font.render(label, True, (220, 230, 235))
+            item_width = label_surface.get_width() + 18
+            if x + item_width > right:
+                x = self.chart_rect.left + 10
+                y += line_height
+            if y + line_height > self.chart_rect.top + 58:
+                break
+            color = self.species_metric_colors.get(species_name, (220, 220, 220))
+            pg.draw.line(self.display_surface, color, (x, y + line_height // 2), (x + 9, y + line_height // 2), 2)
+            self.display_surface.blit(label_surface, (x + 13, y))
+            x += item_width
 
     @staticmethod
     def _format_chart_value(metric, value):
@@ -425,7 +527,7 @@ class UI(pg.sprite.Sprite):
 
         return y + tab_height + 14
 
-    def _draw_biology_data(self, panel_rect):
+    def _draw_biology_data(self, panel_rect, species_counts=None):
         species = self._get_species()
         species_names = sorted(species)
         if not species_names:
@@ -437,7 +539,9 @@ class UI(pg.sprite.Sprite):
         if self.selected_species not in species:
             self.selected_species = species_names[0]
 
-        population = len(species[self.selected_species])
+        if species_counts is None:
+            species_counts = self._get_species_metrics()["EntityCnt"]
+        population = species_counts.get(self.selected_species, 0)
         heading = self.tab_font.render(f"{self.selected_species}  |  population: {population}", True, (240, 240, 240))
         self.display_surface.blit(heading, (panel_rect.left + self.panel_padding, 68))
         row_y = self._draw_species_tabs(panel_rect, species_names)
@@ -534,9 +638,11 @@ class UI(pg.sprite.Sprite):
 
     def display(self, dt):
         self._frame_dt = dt
-        self._sample_species_populations(dt)
-        metrics = self._get_overall_metrics()
-        self._sample_metrics(metrics)
+        species_metrics = self._get_species_metrics()
+        species_counts = species_metrics["EntityCnt"]
+        self._sample_species_populations(dt, species_counts)
+        metrics = self._get_overall_metrics(species_counts)
+        self._sample_metrics(metrics, species_metrics)
         self._draw_toolbar()
         panel_rect = self._get_panel_rect()
 
@@ -554,7 +660,7 @@ class UI(pg.sprite.Sprite):
                 self.chart_rect = None
         else:
             self.chart_rect = None
-            self._draw_biology_data(panel_rect)
+            self._draw_biology_data(panel_rect, species_counts)
             if self.selected_species is not None:
                 self._draw_species_population_chart(panel_rect)
 

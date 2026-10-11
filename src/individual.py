@@ -44,6 +44,84 @@ def calc_distance(a: Individual, b: Individual):
     return math.sqrt((a.pos[0] - b.pos[0]) ** 2 + (a.pos[1] - b.pos[1]) ** 2)
 
 
+class GrassSpatialIndex:
+    CELL_SIZE = 75
+
+    def __init__(self, grasses):
+        self.buckets = {}
+        self.max_grass_size = 0
+        for grass in grasses:
+            cell = self._get_cell(grass.world_pos)
+            self.buckets.setdefault(cell, []).append(grass)
+            self.max_grass_size = max(self.max_grass_size, grass.size)
+
+    @classmethod
+    def _get_cell(cls, position):
+        return (
+            int(position[0] // cls.CELL_SIZE),
+            int(position[1] // cls.CELL_SIZE),
+        )
+
+    def query(self, position, radius):
+        cell_x, cell_y = self._get_cell(position)
+        cell_range = math.ceil(radius / self.CELL_SIZE)
+        radius_squared = radius * radius
+        nearby = []
+        for x in range(cell_x - cell_range, cell_x + cell_range + 1):
+            for y in range(cell_y - cell_range, cell_y + cell_range + 1):
+                for grass in self.buckets.get((x, y), ()):
+                    dx = position[0] - grass.world_pos[0]
+                    dy = position[1] - grass.world_pos[1]
+                    if dx * dx + dy * dy <= radius_squared:
+                        nearby.append(grass)
+        return nearby
+
+    def remove(self, grass):
+        cell = self._get_cell(grass.world_pos)
+        bucket = self.buckets.get(cell)
+        if bucket and grass in bucket:
+            bucket.remove(grass)
+            if not bucket:
+                del self.buckets[cell]
+
+
+class HerbivoreSpatialIndex:
+    CELL_SIZE = 60
+
+    def __init__(self, herbivores):
+        self.buckets = {}
+        self.positions = {}
+        for herbivore in herbivores:
+            position = tuple(herbivore.world_pos)
+            self.positions[herbivore] = position
+            cell = self._get_cell(position)
+            self.buckets.setdefault(cell, []).append((herbivore, position))
+
+    @classmethod
+    def _get_cell(cls, position):
+        return (
+            int(position[0] // cls.CELL_SIZE),
+            int(position[1] // cls.CELL_SIZE),
+        )
+
+    def query(self, position, radius):
+        cell_x, cell_y = self._get_cell(position)
+        cell_range = math.ceil(radius / self.CELL_SIZE)
+        radius_squared = radius * radius
+        nearby = []
+        for x in range(cell_x - cell_range, cell_x + cell_range + 1):
+            for y in range(cell_y - cell_range, cell_y + cell_range + 1):
+                for herbivore, herbivore_position in self.buckets.get((x, y), ()):
+                    dx = position[0] - herbivore_position[0]
+                    dy = position[1] - herbivore_position[1]
+                    if dx * dx + dy * dy <= radius_squared:
+                        nearby.append((herbivore, herbivore_position))
+        return nearby
+
+    def position_of(self, herbivore):
+        return self.positions[herbivore]
+
+
 def get_local_density(creatures, radius=20):
     creatures = list(creatures)
     buckets = {}
@@ -68,33 +146,19 @@ def get_local_density(creatures, radius=20):
         creature.local_density = max(1, density)
 
 
-def get_population_centers(herbivores, radius=300):
+def get_population_centers(herbivores, radius=300, spatial_index=None):
     herbivores = list(herbivores)
     if radius <= 0:
         return {herbivore: tuple(herbivore.world_pos) for herbivore in herbivores}
 
-    buckets = {}
-    for herbivore in herbivores:
-        cell = (int(herbivore.world_pos[0] // radius), int(herbivore.world_pos[1] // radius))
-        buckets.setdefault(cell, []).append(herbivore)
-
-    radius_squared = radius * radius
+    spatial_index = spatial_index or HerbivoreSpatialIndex(herbivores)
     centers = {}
     for herbivore in herbivores:
-        cell_x = int(herbivore.world_pos[0] // radius)
-        cell_y = int(herbivore.world_pos[1] // radius)
-        nearby = []
-        for x in range(cell_x - 1, cell_x + 2):
-            for y in range(cell_y - 1, cell_y + 2):
-                for neighbor in buckets.get((x, y), ()):
-                    dx = herbivore.world_pos[0] - neighbor.world_pos[0]
-                    dy = herbivore.world_pos[1] - neighbor.world_pos[1]
-                    if dx * dx + dy * dy <= radius_squared:
-                        nearby.append(neighbor)
-
+        position = spatial_index.position_of(herbivore)
+        nearby = spatial_index.query(position, radius)
         centers[herbivore] = (
-            sum(neighbor.world_pos[0] for neighbor in nearby) / len(nearby),
-            sum(neighbor.world_pos[1] for neighbor in nearby) / len(nearby),
+            sum(position[0] for _, position in nearby) / len(nearby),
+            sum(position[1] for _, position in nearby) / len(nearby),
         )
     return centers
 
@@ -176,7 +240,7 @@ class Producer(Creature):
     def __init__(self, x, y, type_="grass"):
         self.type_ = type_
         super().__init__(x, y, self.type_)
-        self.gene = {"energy_converting_rate": 1.9,
+        self.gene = {"energy_converting_rate": 1.35,
                      "best_CO2": 0.035, }
         self.mass = 1
         self.atp = 10
@@ -189,7 +253,7 @@ class Producer(Creature):
         if gv.CO2Amount <= 0:
             self.die()
         nutri = mp.get_nutrition_value(int(self.world_pos[0]), int(self.world_pos[1]))
-        if nutri > 100:
+        if nutri > 70:
             delta = math.fabs(gv.CO2Amount / gv.AirAmount - self.gene.get("best_CO2"))
             if delta > 0.15:
                 return
@@ -248,13 +312,16 @@ class Decomposer(Creature):
 class Herbivorous(Consumer):
     POPULATION_RADIUS = 300
     SEPARATION_RADIUS = 30
+    BREED_COOLDOWN = 100
+    WANDER_DIRECTIONS = ((1, 0), (-1, 0), (0, 1), (0, -1))
 
     def __init__(self, x, y, type_="cow"):
         super().__init__(x, y, type_)
+        self.last_breed_age = None
         self.type_ = type_
         self.gene = {"speed": 1,
                      "min_nutrition_to_eat": 50,
-                     "forage_radius": 300,}
+                     "forage_radius": 300}
         self.speed = self.gene.get("speed")
         self.mass = 5
         self.atp = 100
@@ -266,13 +333,8 @@ class Herbivorous(Consumer):
 
     def _random_step(self):
         speed = max(0.1, self.speed)
-        axis = random.choice([0, 1])
-        dx, dy = 0, 0
-        if axis == 0:
-            dx = random.choice([-speed, speed])
-        else:
-            dy = random.choice([-speed, speed])
-        return dx, dy
+        direction_x, direction_y = random.choice(self.WANDER_DIRECTIONS)
+        return direction_x * speed, direction_y * speed
 
     def _step_towards(self, target):
         dx = target[0] - self.world_pos[0]
@@ -299,17 +361,23 @@ class Herbivorous(Consumer):
     def _separation_vector(self, herd_positions):
         repel_x = 0.0
         repel_y = 0.0
+        if isinstance(herd_positions, HerbivoreSpatialIndex):
+            herd_positions = herd_positions.query(
+                self.world_pos,
+                self.SEPARATION_RADIUS,
+            )
         for herbivore, position in herd_positions:
             if herbivore is self:
                 continue
             dx = self.world_pos[0] - position[0]
             dy = self.world_pos[1] - position[1]
-            distance = math.hypot(dx, dy)
-            if distance == 0:
+            distance_squared = dx * dx + dy * dy
+            if distance_squared == 0:
                 angle = random.uniform(0, 2 * math.pi)
                 repel_x += math.cos(angle)
                 repel_y += math.sin(angle)
-            elif distance < self.SEPARATION_RADIUS:
+            elif distance_squared < self.SEPARATION_RADIUS * self.SEPARATION_RADIUS:
+                distance = math.sqrt(distance_squared)
                 strength = (self.SEPARATION_RADIUS - distance) / self.SEPARATION_RADIUS
                 repel_x += dx / distance * strength
                 repel_y += dy / distance * strength
@@ -338,10 +406,14 @@ class Herbivorous(Consumer):
         dy += predator_dy * self.speed
 
         if self.nutrition < self.gene.get("min_nutrition_to_eat"):
-            nearby_grasses = (
-                grass for grass in grasses
-                if calc_distance(self, grass) <= self.gene.get("forage_radius")
-            )
+            forage_radius = self.gene.get("forage_radius")
+            if isinstance(grasses, GrassSpatialIndex):
+                nearby_grasses = grasses.query(self.world_pos, forage_radius)
+            else:
+                nearby_grasses = (
+                    grass for grass in grasses
+                    if calc_distance(self, grass) <= forage_radius
+                )
             nearest_grass = min(nearby_grasses, key=lambda grass: calc_distance(self, grass), default=None)
             if nearest_grass is not None:
                 forage_dx, forage_dy = self._weighted_direction(nearest_grass.world_pos, 2)
@@ -356,7 +428,7 @@ class Herbivorous(Consumer):
         separation_dx, separation_dy = self._separation_vector(herd_positions)
         dx += separation_dx
         dy += separation_dy
-        self.atp -= math.hypot(dx, dy) * self.speed
+        self.atp -= math.hypot(dx, dy) * self.speed * 0.8
         return dx, dy
 
     def tick(self, population_center=None, grasses=(), herd_positions=(), predators=()):
@@ -365,15 +437,26 @@ class Herbivorous(Consumer):
         super().tick(dx, dy)
 
         # consume grass if close enough
-        for grass in grasses:
+        collision_candidates = (
+            grasses.query(self.world_pos, self.size + grasses.max_grass_size)
+            if isinstance(grasses, GrassSpatialIndex)
+            else grasses
+        )
+        for grass in collision_candidates:
             if calc_distance(self, grass) <= self.size + grass.size:
                 self.consume(grass)
+                if isinstance(grasses, GrassSpatialIndex):
+                    grasses.remove(grass)
                 break
-        # 潜在优化：每帧记录 nearby grasses，避免每帧都遍历所有草
 
         # breed
-        if self.atp >= 500 and self.nutrition >= 50:
+        cooldown_elapsed = (
+            self.last_breed_age is None
+            or self.age - self.last_breed_age >= self.BREED_COOLDOWN
+        )
+        if self.atp >= 500 and self.nutrition >= 50 and cooldown_elapsed:
             self.breed()
+            self.last_breed_age = self.age
 
         if self.age >= 500:
             self.die()

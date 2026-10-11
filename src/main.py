@@ -6,11 +6,20 @@ from movements import Move
 from UI import UI
 from maps import *
 import general_var as gv
-from individual import Carnivore, Herbivorous, Producer, get_local_density, get_population_centers
+from individual import (
+    Carnivore,
+    GrassSpatialIndex,
+    Herbivorous,
+    HerbivoreSpatialIndex,
+    Producer,
+    get_local_density,
+    get_population_centers,
+)
 import random
 
 
 class Game:
+
     def __init__(self, saving_id, map_size):
         pg.init()
         self.screen = pg.display.set_mode(WINDOW_SIZE, RESIZABLE)
@@ -21,6 +30,7 @@ class Game:
         self.ui = UI()
         self.bio_update_interval = 1.0 / 10.0
         self.bio_accumulator = 0.0
+        self.grass_spawn_elapsed = 0.0
 
         if saving_id != "":
             self.nutrition_map_pic = read_map(saving_id)
@@ -29,7 +39,21 @@ class Game:
         gv.nutritionMap = np.array(self.nutrition_map_pic)
         self.move = Move(map_size)
         self.ui.set_hover_camera(self.move)
-        for _ in range(10):
+        self.ui.set_species_source(self.move.all_sprites)
+        self.ui.set_reset_callback(self.reset_simulation)
+        self._spawn_initial_population()
+
+    def _spawn_initial_population(self):
+        for _ in range(INITIAL_GRASS_COUNT):
+            self.spawn_random_grass()
+
+        grass_count = sum(
+            isinstance(sprite, Producer) for sprite in self.move.all_sprites
+        )
+        if grass_count < INITIAL_GRASS_COUNT:
+            return False
+
+        for _ in range(INITIAL_HERBIVORE_COUNT):
             cow = Herbivorous(
                 random.randrange(self.move.mapSize),
                 random.randrange(self.move.mapSize),
@@ -37,8 +61,7 @@ class Game:
             self.move.all_sprites.add(cow)
             gv.entCnt += 1
             gv.bioMass += cow.mass
-        self.ui.set_species_source(self.move.all_sprites)
-        self.ui.set_reset_callback(self.reset_simulation)
+        return True
 
     def reset_simulation(self):
         self.move.all_sprites.empty()
@@ -48,7 +71,16 @@ class Game:
         gv.entCnt = 0
         gv.creatureCnt = 0
         self.bio_accumulator = 0.0
+        self.grass_spawn_elapsed = 0.0
         self.ui.reset_history()
+        self._spawn_initial_population()
+
+    def add_grass_at_world(self, world_x, world_y):
+        grass = Producer(int(world_x), int(world_y))
+        self.move.all_sprites.add(grass)
+        gv.bioMass += grass.mass
+        gv.entCnt += 1
+        return grass
 
     def add_grass_at_mouse(self, mouse_pos):
         screen_width = self.screen.get_width()
@@ -58,9 +90,36 @@ class Game:
 
         world_x = self.move.camerax - self.move.camera_sizex / 2 + mouse_pos[0]
         world_y = self.move.cameray - self.move.camera_sizey / 2 + mouse_pos[1]
-        grass = Producer(int(world_x), int(world_y))
-        self.move.all_sprites.add(grass)
-        gv.bioMass += grass.mass
+        return self.add_grass_at_world(world_x, world_y)
+
+    def spawn_random_grass(self):
+        screen_width = self.screen.get_width()
+        screen_height = self.screen.get_height()
+        visible_width = max(0, screen_width - self.ui.panel_width)
+        visible_top = self.ui.TOOLBAR_HEIGHT
+        left = max(0, int(self.move.camerax - self.move.camera_sizex / 2))
+        top = max(0, int(self.move.cameray - self.move.camera_sizey / 2 + visible_top))
+        right = min(
+            self.move.mapSize,
+            int(self.move.camerax - self.move.camera_sizex / 2 + visible_width),
+        )
+        bottom = min(
+            self.move.mapSize,
+            int(self.move.cameray - self.move.camera_sizey / 2 + screen_height),
+        )
+        if right <= left or bottom <= top:
+            return None
+
+        return self.add_grass_at_world(
+            random.randrange(left, right),
+            random.randrange(top, bottom),
+        )
+
+    def _update_grass_spawning(self, dt):
+        self.grass_spawn_elapsed += dt
+        while self.grass_spawn_elapsed >= GRASS_SPAWN_INTERVAL:
+            self.grass_spawn_elapsed -= GRASS_SPAWN_INTERVAL
+            self.spawn_random_grass()
 
     def run(self):
         while 1:
@@ -85,8 +144,6 @@ class Game:
                     if event.button == 1:
                         if not self.ui.handle_event(event):
                             self.add_grass_at_mouse(event.pos)
-                            if event.pos[0] < self.screen.get_width() - self.ui.panel_width:
-                                gv.entCnt += 1
                 if event.type == MOUSEWHEEL:
                     self.ui.handle_event(event)
                 # if event.type == MOUSEWHEEL:
@@ -102,6 +159,7 @@ class Game:
                     self.move.update_size()
 
             if not self.pause:
+                self._update_grass_spawning(dt)
                 # camera movement stays frame-based and is independent from biology update tick
                 key_pressed = pg.key.get_pressed()
                 if key_pressed[K_a] or key_pressed[K_LEFT]:
@@ -122,15 +180,18 @@ class Game:
                     )
                     herbivores = [sprite for sprite in sprites if isinstance(sprite, Herbivorous)]
                     grasses = [sprite for sprite in sprites if isinstance(sprite, Producer)]
+                    grass_index = GrassSpatialIndex(grasses)
                     predators = [sprite for sprite in sprites if isinstance(sprite, Carnivore)]
-                    herd_positions = [(herbivore, tuple(herbivore.world_pos)) for herbivore in herbivores]
+                    herd_index = HerbivoreSpatialIndex(herbivores)
                     population_centers = get_population_centers(
-                        herbivores, Herbivorous.POPULATION_RADIUS
+                        herbivores,
+                        Herbivorous.POPULATION_RADIUS,
+                        spatial_index=herd_index,
                     )
                     for sprite in sprites:
                         if isinstance(sprite, Herbivorous):
                             sprite.tick(
-                                population_centers[sprite], grasses, herd_positions, predators
+                                population_centers[sprite], grass_index, herd_index, predators
                             )
                         elif hasattr(sprite, "tick"):
                             sprite.tick()
