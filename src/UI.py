@@ -1,6 +1,7 @@
 import pygame as pg
 from const import *
 import general_var as gv
+import maps as mp
 
 
 class UI(pg.sprite.Sprite):
@@ -19,6 +20,7 @@ class UI(pg.sprite.Sprite):
         self.active_view = "overall"
         self.selected_species = None
         self.species_source = None
+        self.hover_camera = None
         self.view_tab_rects = {}
         self.species_tab_rects = {}
         self.stat_row_rects = {}
@@ -51,6 +53,9 @@ class UI(pg.sprite.Sprite):
 
     def set_species_source(self, species_source):
         self.species_source = species_source
+
+    def set_hover_camera(self, camera):
+        self.hover_camera = camera
 
     def _get_panel_rect(self):
         width = self.display_surface.get_width()
@@ -153,16 +158,33 @@ class UI(pg.sprite.Sprite):
             reset_text = self.tab_font.render("Reset", True, (245, 245, 245))
             self.display_surface.blit(reset_text, reset_text.get_rect(center=self.reset_button_rect.center))
 
-    def _draw_overall_data(self):
+    @staticmethod
+    def _get_overall_metrics():
         air_amount = max(gv.AirAmount, 1)
         o2_value = gv.O2Amount / air_amount * 100
         co2_value = gv.CO2Amount / air_amount * 100
+        return {
+            "O2": o2_value,
+            "CO2": co2_value,
+            "Biomass": gv.bioMass,
+            "EntityCnt": gv.entCnt,
+        }
+
+    def _draw_overall_data(self, metrics):
         self.stat_row_rects = {}
-        self._draw_stat_row("O2", f"{o2_value:.2f}%", 72)
-        self._draw_stat_row("CO2", f"{co2_value:.2f}%", 108)
-        self._draw_stat_row("Biomass", f"{gv.bioMass:.1f}", 144)
-        self._draw_stat_row("EntityCnt", f"{gv.entCnt:.1f}", 180)
-        self._sample_metrics({"O2": o2_value, "CO2": co2_value, "Biomass": gv.bioMass, "EntityCnt": gv.entCnt})
+        self._draw_stat_row("O2", f"{metrics['O2']:.2f}%", 72)
+        self._draw_stat_row("CO2", f"{metrics['CO2']:.2f}%", 108)
+        self._draw_stat_row("Biomass", self._format_scaled_count(metrics["Biomass"]), 144)
+        self._draw_stat_row("EntityCnt", f"{metrics['EntityCnt']:.1f}", 180)
+
+    @staticmethod
+    def _format_scaled_count(value):
+        absolute_value = abs(value)
+        if absolute_value >= 1_000_000:
+            return f"{value / 1_000_000:.3f}M"
+        if absolute_value >= 1_000:
+            return f"{value / 1_000:.3f}K"
+        return f"{value:.1f}"
 
     def _sample_metrics(self, values):
         self.history_elapsed += self._frame_dt
@@ -261,7 +283,7 @@ class UI(pg.sprite.Sprite):
             x = graph.left + round(graph.width * fraction)
             pg.draw.line(self.display_surface, axis_color, (x, graph.bottom), (x, graph.bottom + 3), 1)
             label_surface = self.detail_font.render(label, True, (175, 185, 190))
-            self.display_surface.blit(label_surface, label_surface.get_rect(midtop=(x, graph.bottom + 4)))
+            self.display_surface.blit(label_surface, label_surface.get_rect(midtop=(x, graph.bottom + 10)))
 
         if len(chart_history) < 2:
             message = self.detail_font.render("Collecting data...", True, (155, 165, 170))
@@ -281,6 +303,8 @@ class UI(pg.sprite.Sprite):
             return f"{value:.2f}%"
         if metric in ("EntityCnt", "Population"):
             return f"{value:.0f}"
+        if metric == "Biomass":
+            return UI._format_scaled_count(value)
         return f"{value:.1f}"
 
     def _update_hovered_metric(self, panel_rect):
@@ -293,6 +317,88 @@ class UI(pg.sprite.Sprite):
             self.hovered_metric = hovered
         elif self.chart_rect is None or not self.chart_rect.collidepoint(mouse_pos):
             self.hovered_metric = None
+
+    @staticmethod
+    def _format_hover_value(value):
+        if isinstance(value, (int, float)):
+            return f"{value:.3g}"
+        return str(value)
+
+    def _get_hover_info(self, mouse_pos):
+        camera = getattr(self, "hover_camera", None)
+        species_source = getattr(self, "species_source", None)
+        if camera is None or species_source is None:
+            return []
+
+        panel_left = self.display_surface.get_width() - self.panel_width
+        if not (0 <= mouse_pos[0] < panel_left and 0 <= mouse_pos[1] < self.display_surface.get_height()):
+            return []
+
+        world_x = mouse_pos[0] + camera.camerax - camera.camera_sizex / 2
+        world_y = mouse_pos[1] + camera.cameray - camera.camera_sizey / 2
+        lines = []
+        nutrition_map = getattr(gv, "nutritionMap", None)
+        if getattr(nutrition_map, "ndim", 0) >= 2:
+            lines.append(f"Nutrition value: {mp.get_nutrition_value(int(world_x), int(world_y)):.1f}")
+
+        hovered_sprite = next(
+            (
+                sprite
+                for sprite in reversed(species_source.sprites())
+                if getattr(sprite, "rect", None) is not None
+                and sprite.rect.collidepoint(mouse_pos)
+            ),
+            None,
+        )
+        if hovered_sprite is None:
+            return lines
+
+        species_name = getattr(hovered_sprite, "type_", None)
+        if species_name:
+            lines.append(f"Species: {species_name}")
+
+        genes = getattr(hovered_sprite, "gene", None)
+        if isinstance(genes, dict):
+            lines.extend(
+                f"{name}: {self._format_hover_value(value)}"
+                for name, value in sorted(genes.items())
+            )
+
+        for attribute, label in (
+            ("atp", "ATP"),
+            ("nutrition", "Individual nutrition"),
+            ("mass", "Mass"),
+            ("age", "Age"),
+            ("local_density", "Local density"),
+        ):
+            value = getattr(hovered_sprite, attribute, None)
+            if isinstance(value, (int, float)):
+                lines.append(f"{label}: {self._format_hover_value(value)}")
+
+        return lines
+
+    def _draw_hover_info(self):
+        lines = self._get_hover_info(pg.mouse.get_pos())
+        if not lines:
+            return
+
+        padding = 10
+        line_height = self.detail_font.get_linesize() + 3
+        max_lines = max(1, (self.display_surface.get_height() - padding * 2) // line_height)
+        lines = lines[:max_lines]
+        text_surfaces = [self.detail_font.render(line, True, (235, 240, 240)) for line in lines]
+        width = min(
+            self.display_surface.get_width() - padding * 2,
+            max(surface.get_width() for surface in text_surfaces) + padding * 2,
+        )
+        height = len(text_surfaces) * line_height + padding
+        panel = pg.Surface((width, height), pg.SRCALPHA)
+        panel.fill((20, 24, 26, 220))
+        x = padding
+        y = self.display_surface.get_height() - height - padding
+        self.display_surface.blit(panel, (x, y))
+        for index, text_surface in enumerate(text_surfaces):
+            self.display_surface.blit(text_surface, (x + padding, y + 5 + index * line_height))
 
     def _draw_species_tabs(self, panel_rect, species_names):
         x = panel_rect.left + self.panel_padding
@@ -429,6 +535,8 @@ class UI(pg.sprite.Sprite):
     def display(self, dt):
         self._frame_dt = dt
         self._sample_species_populations(dt)
+        metrics = self._get_overall_metrics()
+        self._sample_metrics(metrics)
         self._draw_toolbar()
         panel_rect = self._get_panel_rect()
 
@@ -437,7 +545,7 @@ class UI(pg.sprite.Sprite):
         self._draw_view_tabs(panel_rect)
         if self.active_view == "overall":
             self.species_tab_rects = {}
-            self._draw_overall_data()
+            self._draw_overall_data(metrics)
             self._update_hovered_metric(panel_rect)
             chart_metric = self.pinned_metric or self.hovered_metric
             if chart_metric:
@@ -451,6 +559,7 @@ class UI(pg.sprite.Sprite):
                 self._draw_species_population_chart(panel_rect)
 
         self.update(dt)
+        self._draw_hover_info()
 
     def update_elements(self):
         pass

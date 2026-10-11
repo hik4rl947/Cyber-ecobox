@@ -112,14 +112,17 @@ class Creature(Individual):
 
     def _inherit_genes(self):
         inherited_genes = self.gene.copy()
+        mutation_probability = self.GENE_MUTATION_RATE / max(1, self.default_size)
         for gene, (minimum, maximum) in self.MUTABLE_GENES.items():
             value = inherited_genes.get(gene)
-            if not isinstance(value, (int, float)) or random.random() >= self.GENE_MUTATION_RATE:
+            if not isinstance(value, (int, float)) or random.random() >= mutation_probability:
                 continue
 
-            standard_deviation = (maximum - minimum) / 6
-            mutated_value = random.gauss(value, standard_deviation)
-            inherited_genes[gene] = max(minimum, min(maximum, mutated_value))
+            mutation_amplitude = min((maximum - minimum) * 0.1, value - minimum, maximum - value)
+            if mutation_amplitude <= 0:
+                continue
+
+            inherited_genes[gene] = random.uniform(value - mutation_amplitude, value + mutation_amplitude)
         return inherited_genes
 
     def breed(self):
@@ -129,7 +132,7 @@ class Creature(Individual):
         self.rebuild_visual()
 
         angle = random.uniform(0, 2 * math.pi)
-        distance = random.uniform(10, 30)
+        distance = random.uniform(1*self.size, 10*self.size)
         offspring = type(self)(
             self.world_pos[0] + math.cos(angle) * distance,
             self.world_pos[1] + math.sin(angle) * distance,
@@ -173,8 +176,8 @@ class Producer(Creature):
     def __init__(self, x, y, type_="grass"):
         self.type_ = type_
         super().__init__(x, y, self.type_)
-        self.gene = {"energy_converting_rate": 1.3,
-                     "best_CO2": 0.04, }
+        self.gene = {"energy_converting_rate": 1.9,
+                     "best_CO2": 0.035, }
         self.mass = 1
         self.atp = 10
     
@@ -188,14 +191,15 @@ class Producer(Creature):
         nutri = mp.get_nutrition_value(int(self.world_pos[0]), int(self.world_pos[1]))
         if nutri > 100:
             delta = math.fabs(gv.CO2Amount / gv.AirAmount - self.gene.get("best_CO2"))
-            if delta > 0.25:
+            if delta > 0.15:
                 return
             # 近似为二次
-            dnut = nutri/100 * max(0.0, 3 - (delta / 0.1) ** 2) * 1.5
+            # dnut = nutri/100 * max(0.0, 3 - (delta / 0.1) ** 2) * 1.5
+            dnut = nutri/100 * max(0.0, -math.log(5*delta+0.54, math.e)) * 7.5
             self.nutrition += dnut * self.mass / (0.3 * max(1, self.local_density))
             rate = self.gene.get("energy_converting_rate")
-            gv.O2Amount += dnut * rate * self.mass/10
-            gv.CO2Amount -= dnut * rate * self.mass/10
+            gv.O2Amount += rate * self.mass/10
+            gv.CO2Amount -= rate * self.mass/10
 
     def grow(self):
         if self.nutrition > self.mass*1.5 and self.mass < 10:
@@ -324,7 +328,7 @@ class Herbivorous(Consumer):
             self.mass += 1
             self.atp -= self.mass
             self.nutrition -= self.mass
-            self.size = self.default_size * (1 + int(self.mass * 0.1))
+            self.size = self.default_size * (1 + int(self.mass * 0.06))
             self.rebuild_visual()
 
     def move(self, population_center, grasses, herd_positions, predators):
@@ -371,7 +375,7 @@ class Herbivorous(Consumer):
         if self.atp >= 500 and self.nutrition >= 50:
             self.breed()
 
-        if self.age >= 300:
+        if self.age >= 500:
             self.die()
 
 

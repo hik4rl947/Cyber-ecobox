@@ -28,6 +28,7 @@ class Game:
             self.nutrition_map_pic = generate("nutrition_map", map_size)
         gv.nutritionMap = np.array(self.nutrition_map_pic)
         self.move = Move(map_size)
+        self.ui.set_hover_camera(self.move)
         for _ in range(10):
             cow = Herbivorous(
                 random.randrange(self.move.mapSize),
