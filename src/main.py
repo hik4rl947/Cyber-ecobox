@@ -121,86 +121,82 @@ class Game:
             self.grass_spawn_elapsed -= GRASS_SPAWN_INTERVAL
             self.spawn_random_grass()
 
+    def _handle_events(self):
+        for event in pg.event.get():
+            if event.type == QUIT:
+                store_map(self.nutrition_map_pic)
+                pg.quit()
+                sys.exit()
+            if event.type == KEYDOWN:
+                if event.key == K_F11:
+                    self.fullScreen = not self.fullScreen
+                    if self.fullScreen:
+                        pg.display.set_mode(WINDOW_SIZE_FULL, RESIZABLE | FULLSCREEN | HWSURFACE)
+                    else:
+                        pg.display.set_mode(WINDOW_SIZE, RESIZABLE)
+                if event.key == K_SPACE:
+                    self.move.camera_scale_ratio = 1
+            elif event.type == MOUSEBUTTONUP:
+                if event.button == 1 and not self.ui.handle_event(event):
+                    self.add_grass_at_mouse(event.pos)
+            elif event.type == MOUSEWHEEL:
+                self.ui.handle_event(event)
+            elif event.type == KEYUP:
+                if event.key == K_SPACE:
+                    self.pause = not self.pause
+            elif event.type == VIDEORESIZE:
+                self.move.update_size()
+
+    def _update_camera(self):
+        key_pressed = pg.key.get_pressed()
+        if key_pressed[K_a] or key_pressed[K_LEFT]:
+            self.move.camerax = max(self.move.camera_sizex / 2, self.move.camerax - 2)
+        if key_pressed[K_s] or key_pressed[K_DOWN]:
+            self.move.cameray = min(self.move.mapSize - self.move.camera_sizey / 2, self.move.cameray + 2)
+        if key_pressed[K_d] or key_pressed[K_RIGHT]:
+            self.move.camerax = min(self.move.mapSize - self.move.camera_sizex / 2, self.move.camerax + 2)
+        if key_pressed[K_w] or key_pressed[K_UP]:
+            self.move.cameray = max(self.move.camera_sizey / 2, self.move.cameray - 2)
+
+    def _advance_simulation(self, dt):
+        self._update_grass_spawning(dt)
+        self._update_camera()
+        self.bio_accumulator += dt
+        if self.bio_accumulator < self.bio_update_interval:
+            return
+
+        sprites = list(self.move.all_sprites)
+        get_local_density(
+            sprite for sprite in sprites
+            if hasattr(sprite, "world_pos") and hasattr(sprite, "mass")
+        )
+        herbivores = [sprite for sprite in sprites if isinstance(sprite, Herbivorous)]
+        grasses = [sprite for sprite in sprites if isinstance(sprite, Producer)]
+        grass_index = GrassSpatialIndex(grasses)
+        predators = [sprite for sprite in sprites if isinstance(sprite, Carnivore)]
+        herd_index = HerbivoreSpatialIndex(herbivores)
+        population_centers = get_population_centers(
+            herbivores,
+            Herbivorous.POPULATION_RADIUS,
+            spatial_index=herd_index,
+        )
+        for sprite in sprites:
+            if isinstance(sprite, Herbivorous):
+                sprite.tick(population_centers[sprite], grass_index, herd_index, predators)
+            elif hasattr(sprite, "tick"):
+                sprite.tick()
+        gv.bioMass = sum(
+            sprite.mass for sprite in self.move.all_sprites
+            if hasattr(sprite, "mass")
+        )
+        self.bio_accumulator = 0
+
     def run(self):
         while 1:
             dt = self.clock.tick(30) / 1000.0
-            for event in pg.event.get():
-                if event.type == QUIT:
-                    store_map(self.nutrition_map_pic)
-                    # saving status
-                    pg.quit()
-                    sys.exit()
-                if event.type == KEYDOWN:
-                    if event.key == K_F11:
-                        self.fullScreen = not self.fullScreen
-                        if self.fullScreen:
-                            window = pg.display.set_mode(WINDOW_SIZE_FULL, RESIZABLE | FULLSCREEN | HWSURFACE)
-                        else:
-                            window = pg.display.set_mode(WINDOW_SIZE, RESIZABLE)
-                    if event.key == K_SPACE:
-                        self.move.camera_scale_ratio = 1
-
-                if event.type == MOUSEBUTTONUP:
-                    if event.button == 1:
-                        if not self.ui.handle_event(event):
-                            self.add_grass_at_mouse(event.pos)
-                if event.type == MOUSEWHEEL:
-                    self.ui.handle_event(event)
-                # if event.type == MOUSEWHEEL:
-                #     if event.y == 1 and self.move.camera_scale_ratio < 2:
-                #         self.move.camera_scale_ratio += 0.1
-                #     if event.y == -1 and self.move.camera_scale_ratio > 0.7:
-                #         self.move.camera_scale_ratio -= 0.1
-
-                if event.type == KEYUP:
-                    if event.key == K_SPACE:
-                        self.pause = not self.pause
-                if event.type == VIDEORESIZE:
-                    self.move.update_size()
-
+            self._handle_events()
             if not self.pause:
-                self._update_grass_spawning(dt)
-                # camera movement stays frame-based and is independent from biology update tick
-                key_pressed = pg.key.get_pressed()
-                if key_pressed[K_a] or key_pressed[K_LEFT]:
-                    self.move.camerax = max(self.move.camera_sizex/2, self.move.camerax - 2)
-                if key_pressed[K_s] or key_pressed[K_DOWN]:
-                    self.move.cameray = min(self.move.mapSize-self.move.camera_sizey/2, self.move.cameray + 2)
-                if key_pressed[K_d] or key_pressed[K_RIGHT]:
-                    self.move.camerax = min(self.move.mapSize-self.move.camera_sizex/2, self.move.camerax + 2)
-                if key_pressed[K_w] or key_pressed[K_UP]:
-                    self.move.cameray = max(self.move.camera_sizey/2, self.move.cameray - 2)
-
-                self.bio_accumulator += dt
-                if self.bio_accumulator >= self.bio_update_interval:
-                    sprites = list(self.move.all_sprites)
-                    get_local_density(
-                        sprite for sprite in sprites
-                        if hasattr(sprite, "world_pos") and hasattr(sprite, "mass")
-                    )
-                    herbivores = [sprite for sprite in sprites if isinstance(sprite, Herbivorous)]
-                    grasses = [sprite for sprite in sprites if isinstance(sprite, Producer)]
-                    grass_index = GrassSpatialIndex(grasses)
-                    predators = [sprite for sprite in sprites if isinstance(sprite, Carnivore)]
-                    herd_index = HerbivoreSpatialIndex(herbivores)
-                    population_centers = get_population_centers(
-                        herbivores,
-                        Herbivorous.POPULATION_RADIUS,
-                        spatial_index=herd_index,
-                    )
-                    for sprite in sprites:
-                        if isinstance(sprite, Herbivorous):
-                            sprite.tick(
-                                population_centers[sprite], grass_index, herd_index, predators
-                            )
-                        elif hasattr(sprite, "tick"):
-                            sprite.tick()
-                    gv.bioMass = sum(
-                        sprite.mass for sprite in self.move.all_sprites
-                        if hasattr(sprite, "mass")
-                    )
-                    self.bio_accumulator = 0
-
+                self._advance_simulation(dt)
             self.move.run(dt)
             self.ui.display(dt)
             pg.display.update()

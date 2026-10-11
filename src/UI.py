@@ -67,17 +67,29 @@ class UI(pg.sprite.Sprite):
         height = self.display_surface.get_height()
         return pg.Rect(width - self.panel_width, 0, self.panel_width, height)
 
+    def _panel_left(self):
+        return self.display_surface.get_width() - self.panel_width
+
+    def _draw_tab_button(self, rect, label, selected, font, active_background=(55, 105, 125), inactive_background=(48, 48, 48), active_border=(120, 220, 255), inactive_border=(100, 100, 100), text_color=(245, 245, 245)):
+        pg.draw.rect(self.display_surface, active_background if selected else inactive_background, rect, border_radius=4)
+        pg.draw.rect(self.display_surface, active_border if selected else inactive_border, rect, 1, border_radius=4)
+        label_surface = font.render(label, True, text_color)
+        self.display_surface.blit(label_surface, label_surface.get_rect(center=rect.center))
+
     def _draw_stat_row(self, label, value, y):
         text_color = (240, 240, 240)
         label_surface = self.font.render(f"{label}:", True, text_color)
         value_surface = self.font.render(f"{value}", True, (120, 220, 255))
 
-        x = self.display_surface.get_width() - self.panel_width + self.panel_padding
+        x = self._panel_left() + self.panel_padding
         self.display_surface.blit(label_surface, (x, y))
         value_x = self.display_surface.get_width() - self.panel_padding - value_surface.get_width()
         self.display_surface.blit(value_surface, (value_x, y))
         self.stat_row_rects[label] = pg.Rect(
-            x, y - 3, self.panel_width - self.panel_padding * 2, max(label_surface.get_height(), value_surface.get_height()) + 6
+            x,
+            y - 3,
+            self.panel_width - self.panel_padding * 2,
+            max(label_surface.get_height(), value_surface.get_height()) + 6,
         )
 
     def _get_species(self):
@@ -141,14 +153,12 @@ class UI(pg.sprite.Sprite):
         }
 
         for view, label in (("overall", "Overall"), ("biology", "Biology")):
-            rect = self.view_tab_rects[view]
-            selected = self.active_view == view
-            background = (55, 105, 125) if selected else (48, 48, 48)
-            border = (120, 220, 255) if selected else (100, 100, 100)
-            pg.draw.rect(self.display_surface, background, rect, border_radius=4)
-            pg.draw.rect(self.display_surface, border, rect, 1, border_radius=4)
-            text = self.tab_font.render(label, True, (245, 245, 245))
-            self.display_surface.blit(text, text.get_rect(center=rect.center))
+            self._draw_tab_button(
+                self.view_tab_rects[view],
+                label,
+                self.active_view == view,
+                self.tab_font,
+            )
 
     def _draw_toolbar(self):
         panel_left = max(0, self.display_surface.get_width() - self.panel_width)
@@ -158,10 +168,16 @@ class UI(pg.sprite.Sprite):
         button_width = min(76, max(0, panel_left - 24))
         self.reset_button_rect = pg.Rect(12, 9, button_width, 34)
         if button_width >= 48:
-            pg.draw.rect(self.display_surface, (70, 75, 65), self.reset_button_rect, border_radius=4)
-            pg.draw.rect(self.display_surface, (150, 175, 130), self.reset_button_rect, 1, border_radius=4)
-            reset_text = self.tab_font.render("Reset", True, (245, 245, 245))
-            self.display_surface.blit(reset_text, reset_text.get_rect(center=self.reset_button_rect.center))
+            self._draw_tab_button(
+                self.reset_button_rect,
+                "Reset",
+                False,
+                self.tab_font,
+                active_background=(70, 75, 65),
+                inactive_background=(70, 75, 65),
+                active_border=(150, 175, 130),
+                inactive_border=(150, 175, 130),
+            )
 
     @staticmethod
     def _get_overall_metrics(species_counts=None):
@@ -518,11 +534,7 @@ class UI(pg.sprite.Sprite):
                 y += tab_height + gap
             rect = pg.Rect(x, y, width, tab_height)
             self.species_tab_rects[name] = rect
-            selected = name == self.selected_species
-            pg.draw.rect(self.display_surface, (55, 105, 125) if selected else (48, 48, 48), rect, border_radius=3)
-            pg.draw.rect(self.display_surface, (120, 220, 255) if selected else (100, 100, 100), rect, 1, border_radius=3)
-            text = self.tab_font.render(label, True, (245, 245, 245))
-            self.display_surface.blit(text, text.get_rect(center=rect.center))
+            self._draw_tab_button(rect, label, name == self.selected_species, self.tab_font)
             x += width + gap
 
         return y + tab_height + 14

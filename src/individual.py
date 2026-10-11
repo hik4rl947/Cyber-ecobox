@@ -41,7 +41,28 @@ class Individual(pg.sprite.Sprite):
 
 
 def calc_distance(a: Individual, b: Individual):
-    return math.sqrt((a.pos[0] - b.pos[0]) ** 2 + (a.pos[1] - b.pos[1]) ** 2)
+    return math.hypot(a.pos[0] - b.pos[0], a.pos[1] - b.pos[1])
+
+
+def distance_squared(a, b):
+    dx = a[0] - b[0]
+    dy = a[1] - b[1]
+    return dx * dx + dy * dy
+
+
+def get_cell(position, cell_size):
+    return (
+        int(position[0] // cell_size),
+        int(position[1] // cell_size),
+    )
+
+
+def iter_neighbor_cells(position, radius, cell_size):
+    cell_x, cell_y = get_cell(position, cell_size)
+    cell_range = math.ceil(radius / cell_size)
+    for x in range(cell_x - cell_range, cell_x + cell_range + 1):
+        for y in range(cell_y - cell_range, cell_y + cell_range + 1):
+            yield x, y
 
 
 class GrassSpatialIndex:
@@ -51,33 +72,59 @@ class GrassSpatialIndex:
         self.buckets = {}
         self.max_grass_size = 0
         for grass in grasses:
-            cell = self._get_cell(grass.world_pos)
+            cell = get_cell(grass.world_pos, self.CELL_SIZE)
             self.buckets.setdefault(cell, []).append(grass)
             self.max_grass_size = max(self.max_grass_size, grass.size)
 
-    @classmethod
-    def _get_cell(cls, position):
-        return (
-            int(position[0] // cls.CELL_SIZE),
-            int(position[1] // cls.CELL_SIZE),
-        )
-
     def query(self, position, radius):
-        cell_x, cell_y = self._get_cell(position)
-        cell_range = math.ceil(radius / self.CELL_SIZE)
         radius_squared = radius * radius
         nearby = []
-        for x in range(cell_x - cell_range, cell_x + cell_range + 1):
-            for y in range(cell_y - cell_range, cell_y + cell_range + 1):
-                for grass in self.buckets.get((x, y), ()):
-                    dx = position[0] - grass.world_pos[0]
-                    dy = position[1] - grass.world_pos[1]
-                    if dx * dx + dy * dy <= radius_squared:
-                        nearby.append(grass)
+        for x, y in iter_neighbor_cells(position, radius, self.CELL_SIZE):
+            for grass in self.buckets.get((x, y), ()):
+                if distance_squared(position, grass.world_pos) <= radius_squared:
+                    nearby.append(grass)
         return nearby
 
+    def nearest(self, position, radius):
+        radius_squared = radius * radius
+        nearest_grass = None
+        nearest_distance_squared = radius_squared
+        cell_x, cell_y = get_cell(position, self.CELL_SIZE)
+        max_ring = math.ceil(radius / self.CELL_SIZE)
+
+        for ring in range(max_ring + 1):
+            for offset_x in range(-ring, ring + 1):
+                for offset_y in range(-ring, ring + 1):
+                    if ring and abs(offset_x) != ring and abs(offset_y) != ring:
+                        continue
+
+                    cell = (cell_x + offset_x, cell_y + offset_y)
+                    for grass in self.buckets.get(cell, ()):
+                        distance_sq = distance_squared(position, grass.world_pos)
+                        if distance_sq <= radius_squared and (
+                            nearest_grass is None or distance_sq < nearest_distance_squared
+                        ):
+                            nearest_grass = grass
+                            nearest_distance_squared = distance_sq
+
+            if nearest_grass is not None:
+                left = (cell_x - ring) * self.CELL_SIZE
+                right = (cell_x + ring + 1) * self.CELL_SIZE
+                top = (cell_y - ring) * self.CELL_SIZE
+                bottom = (cell_y + ring + 1) * self.CELL_SIZE
+                unsearched_distance = min(
+                    position[0] - left,
+                    right - position[0],
+                    position[1] - top,
+                    bottom - position[1],
+                )
+                if nearest_distance_squared <= unsearched_distance * unsearched_distance:
+                    break
+
+        return nearest_grass
+
     def remove(self, grass):
-        cell = self._get_cell(grass.world_pos)
+        cell = get_cell(grass.world_pos, self.CELL_SIZE)
         bucket = self.buckets.get(cell)
         if bucket and grass in bucket:
             bucket.remove(grass)
@@ -94,28 +141,16 @@ class HerbivoreSpatialIndex:
         for herbivore in herbivores:
             position = tuple(herbivore.world_pos)
             self.positions[herbivore] = position
-            cell = self._get_cell(position)
+            cell = get_cell(position, self.CELL_SIZE)
             self.buckets.setdefault(cell, []).append((herbivore, position))
 
-    @classmethod
-    def _get_cell(cls, position):
-        return (
-            int(position[0] // cls.CELL_SIZE),
-            int(position[1] // cls.CELL_SIZE),
-        )
-
     def query(self, position, radius):
-        cell_x, cell_y = self._get_cell(position)
-        cell_range = math.ceil(radius / self.CELL_SIZE)
         radius_squared = radius * radius
         nearby = []
-        for x in range(cell_x - cell_range, cell_x + cell_range + 1):
-            for y in range(cell_y - cell_range, cell_y + cell_range + 1):
-                for herbivore, herbivore_position in self.buckets.get((x, y), ()):
-                    dx = position[0] - herbivore_position[0]
-                    dy = position[1] - herbivore_position[1]
-                    if dx * dx + dy * dy <= radius_squared:
-                        nearby.append((herbivore, herbivore_position))
+        for x, y in iter_neighbor_cells(position, radius, self.CELL_SIZE):
+            for herbivore, herbivore_position in self.buckets.get((x, y), ()):
+                if distance_squared(position, herbivore_position) <= radius_squared:
+                    nearby.append((herbivore, herbivore_position))
         return nearby
 
     def position_of(self, herbivore):
@@ -127,23 +162,43 @@ def get_local_density(creatures, radius=20):
     buckets = {}
     for creature in creatures:
         species = (type(creature), creature.type_)
-        cell = (int(creature.world_pos[0] // radius), int(creature.world_pos[1] // radius))
+        cell = get_cell(creature.world_pos, radius)
         buckets.setdefault((species, cell), []).append(creature)
 
     radius_squared = radius * radius
     for creature in creatures:
         species = (type(creature), creature.type_)
-        cell_x = int(creature.world_pos[0] // radius)
-        cell_y = int(creature.world_pos[1] // radius)
+        cell_x, cell_y = get_cell(creature.world_pos, radius)
         density = 0
         for x in range(cell_x - 1, cell_x + 2):
             for y in range(cell_y - 1, cell_y + 2):
                 for neighbor in buckets.get((species, (x, y)), ()):
-                    dx = creature.world_pos[0] - neighbor.world_pos[0]
-                    dy = creature.world_pos[1] - neighbor.world_pos[1]
-                    if dx * dx + dy * dy <= radius_squared:
+                    if distance_squared(creature.world_pos, neighbor.world_pos) <= radius_squared:
                         density += 1
         creature.local_density = max(1, density)
+
+
+def find_nearest_grass(position, grasses, radius):
+    if isinstance(grasses, GrassSpatialIndex):
+        return grasses.nearest(position, radius)
+
+    nearby = []
+    for grass in grasses:
+        if distance_squared(position, grass.world_pos) <= radius * radius:
+            nearby.append(grass)
+    if not nearby:
+        return None
+    return min(nearby, key=lambda grass: distance_squared(position, grass.world_pos))
+
+
+def get_grass_collision_candidates(grasses, position, radius):
+    if isinstance(grasses, GrassSpatialIndex):
+        return grasses.query(position, radius)
+    return [
+        grass
+        for grass in grasses
+        if distance_squared(position, grass.world_pos) <= radius * radius
+    ]
 
 
 def get_population_centers(herbivores, radius=300, spatial_index=None):
@@ -156,9 +211,13 @@ def get_population_centers(herbivores, radius=300, spatial_index=None):
     for herbivore in herbivores:
         position = spatial_index.position_of(herbivore)
         nearby = spatial_index.query(position, radius)
+        if not nearby:
+            centers[herbivore] = position
+            continue
+
         centers[herbivore] = (
-            sum(position[0] for _, position in nearby) / len(nearby),
-            sum(position[1] for _, position in nearby) / len(nearby),
+            sum(nearby_pos[0] for _, nearby_pos in nearby) / len(nearby),
+            sum(nearby_pos[1] for _, nearby_pos in nearby) / len(nearby),
         )
     return centers
 
@@ -407,14 +466,7 @@ class Herbivorous(Consumer):
 
         if self.nutrition < self.gene.get("min_nutrition_to_eat"):
             forage_radius = self.gene.get("forage_radius")
-            if isinstance(grasses, GrassSpatialIndex):
-                nearby_grasses = grasses.query(self.world_pos, forage_radius)
-            else:
-                nearby_grasses = (
-                    grass for grass in grasses
-                    if calc_distance(self, grass) <= forage_radius
-                )
-            nearest_grass = min(nearby_grasses, key=lambda grass: calc_distance(self, grass), default=None)
+            nearest_grass = find_nearest_grass(self.world_pos, grasses, forage_radius)
             if nearest_grass is not None:
                 forage_dx, forage_dy = self._weighted_direction(nearest_grass.world_pos, 2)
                 dx += forage_dx
@@ -432,16 +484,11 @@ class Herbivorous(Consumer):
         return dx, dy
 
     def tick(self, population_center=None, grasses=(), herd_positions=(), predators=()):
-        # move
         dx, dy = self.move(population_center, grasses, herd_positions, predators)
         super().tick(dx, dy)
 
-        # consume grass if close enough
-        collision_candidates = (
-            grasses.query(self.world_pos, self.size + grasses.max_grass_size)
-            if isinstance(grasses, GrassSpatialIndex)
-            else grasses
-        )
+        collision_radius = self.size + getattr(grasses, "max_grass_size", 0)
+        collision_candidates = get_grass_collision_candidates(grasses, self.world_pos, collision_radius)
         for grass in collision_candidates:
             if calc_distance(self, grass) <= self.size + grass.size:
                 self.consume(grass)
@@ -449,7 +496,6 @@ class Herbivorous(Consumer):
                     grasses.remove(grass)
                 break
 
-        # breed
         cooldown_elapsed = (
             self.last_breed_age is None
             or self.age - self.last_breed_age >= self.BREED_COOLDOWN
