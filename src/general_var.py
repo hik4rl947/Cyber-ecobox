@@ -4,7 +4,7 @@ from const import *
 
 O2Concentration = 0.21
 CO2Concentration = 0.03
-AirAmount = 10000000
+AirAmount = 100000000
 
 O2Amount = O2Concentration * AirAmount
 CO2Amount = CO2Concentration * AirAmount
@@ -15,3 +15,5 @@ nutritionMap = []
 
 bioMass = 0
 entCnt = 0
+lifespan_stats = {}
+simulation_time = 0.0
