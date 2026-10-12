@@ -45,7 +45,7 @@ class Game:
 
     def _spawn_initial_population(self):
         for _ in range(INITIAL_GRASS_COUNT):
-            self.spawn_random_grass()
+            self.spawn_random_entity(Producer)
 
         grass_count = sum(
             isinstance(sprite, Producer) for sprite in self.move.all_sprites
@@ -54,13 +54,7 @@ class Game:
             return False
 
         for _ in range(INITIAL_HERBIVORE_COUNT):
-            cow = Herbivorous(
-                random.randrange(self.move.mapSize),
-                random.randrange(self.move.mapSize),
-            )
-            self.move.all_sprites.add(cow)
-            gv.entCnt += 1
-            gv.bioMass += cow.mass
+            self.spawn_random_entity(Herbivorous)
         return True
 
     def reset_simulation(self):
@@ -92,7 +86,7 @@ class Game:
         world_y = self.move.cameray - self.move.camera_sizey / 2 + mouse_pos[1]
         return self.add_grass_at_world(world_x, world_y)
 
-    def spawn_random_grass(self):
+    def spawn_random_entity(self, entity_type):
         screen_width = self.screen.get_width()
         screen_height = self.screen.get_height()
         visible_width = max(0, screen_width - self.ui.panel_width)
@@ -110,16 +104,20 @@ class Game:
         if right <= left or bottom <= top:
             return None
 
-        return self.add_grass_at_world(
+        entity = entity_type(
             random.randrange(left, right),
             random.randrange(top, bottom),
         )
+        self.move.all_sprites.add(entity)
+        gv.bioMass += entity.mass
+        gv.entCnt += 1
+        return entity
 
     def _update_grass_spawning(self, dt):
         self.grass_spawn_elapsed += dt
         while self.grass_spawn_elapsed >= GRASS_SPAWN_INTERVAL:
             self.grass_spawn_elapsed -= GRASS_SPAWN_INTERVAL
-            self.spawn_random_grass()
+            self.spawn_random_entity(Producer)
 
     def _handle_events(self):
         for event in pg.event.get():
