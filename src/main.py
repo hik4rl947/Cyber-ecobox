@@ -1,7 +1,5 @@
-import pygame as pg
 import sys
 from pygame.locals import *
-from const import *
 from movements import Move
 from UI import UI
 from maps import *
@@ -15,6 +13,7 @@ from individual import (
     get_local_density,
     get_population_centers,
 )
+import localization
 import random
 
 
@@ -23,7 +22,7 @@ class Game:
     def __init__(self, saving_id, map_size):
         pg.init()
         self.screen = pg.display.set_mode(WINDOW_SIZE, RESIZABLE)
-        pg.display.set_caption("生态箱")
+        pg.display.set_caption(localization.TEXT["app.title"])
         self.clock = pg.time.Clock()
         self.fullScreen = False
         self.pause = False
@@ -31,6 +30,7 @@ class Game:
         self.bio_update_interval = 1.0 / 10.0
         self.bio_accumulator = 0.0
         self.grass_spawn_elapsed = 0.0
+        self._pause_before_settings = False
 
         if saving_id != "":
             self.nutrition_map_pic = read_map(saving_id)
@@ -41,7 +41,20 @@ class Game:
         self.ui.set_hover_camera(self.move)
         self.ui.set_species_source(self.move.all_sprites)
         self.ui.set_reset_callback(self.reset_simulation)
+        self.ui.set_settings_callback(self._on_settings_open_changed)
+        self.ui.set_language_callback(self._on_language_changed)
         self._spawn_initial_population()
+
+    def _on_settings_open_changed(self, is_open):
+        if is_open:
+            self._pause_before_settings = self.pause
+            self.pause = True
+        else:
+            self.pause = self._pause_before_settings
+
+    @staticmethod
+    def _on_language_changed(language):
+        pg.display.set_caption(localization.TEXT["app.title"])
 
     def _spawn_initial_population(self):
         for _ in range(INITIAL_GRASS_COUNT):
@@ -139,14 +152,17 @@ class Game:
                         pg.display.set_mode(WINDOW_SIZE, RESIZABLE)
                 if event.key == K_SPACE:
                     self.move.camera_scale_ratio = 1
+                self.ui.handle_event(event)
             elif event.type == MOUSEBUTTONUP:
                 if event.button == 1 and not self.ui.handle_event(event):
                     self.add_grass_at_mouse(event.pos)
             elif event.type == MOUSEWHEEL:
                 self.ui.handle_event(event)
             elif event.type == KEYUP:
-                if event.key == K_SPACE:
+                if event.key == K_SPACE and not self.ui.settings_open:
                     self.pause = not self.pause
+                else:
+                    self.ui.handle_event(event)
             elif event.type == VIDEORESIZE:
                 self.move.update_size()
 
@@ -204,7 +220,7 @@ class Game:
             if not self.pause:
                 self._advance_simulation(dt)
             self.move.run(dt)
-            self.ui.display(dt)
+            self.ui.display(dt if not self.pause else 0.0)
             pg.display.update()
 
 
