@@ -33,6 +33,9 @@ class UI(pg.sprite.Sprite):
         self.species_metric_history = {"Biomass": {}, "EntityCnt": {}}
         self.species_metric_colors = {}
         self.species_population_history = {}
+        self.species_lifespan_history = {}
+        self.lifespan_history_sample_time = gv.simulation_time
+        self.lifespan_row_rect = None
         self.species_history_elapsed = 0.0
         self.history_elapsed = 0.0
         self.history_interval = 0.5
@@ -51,6 +54,9 @@ class UI(pg.sprite.Sprite):
             species_histories.clear()
         self.species_metric_colors.clear()
         self.species_population_history.clear()
+        self.species_lifespan_history.clear()
+        self.lifespan_history_sample_time = gv.simulation_time
+        self.lifespan_row_rect = None
         self.species_history_elapsed = 0.0
         self.history_elapsed = 0.0
         self.hovered_metric = None
@@ -96,12 +102,15 @@ class UI(pg.sprite.Sprite):
         if self.species_source is None:
             return {}
 
+        self._prune_lifespan_stats()
         species = {}
         for sprite in self.species_source:
             name = getattr(sprite, "type_", None)
             genes = getattr(sprite, "gene", None)
             if name and isinstance(genes, dict) and genes:
                 species.setdefault(str(name), []).append(genes)
+        for species_name in gv.lifespan_stats:
+            species.setdefault(species_name, [])
         return species
 
     @staticmethod
@@ -133,6 +142,27 @@ class UI(pg.sprite.Sprite):
             attribute: totals[attribute] / counts[attribute] if counts[attribute] else 0.0
             for attribute in totals
         }
+
+    @staticmethod
+    def _prune_lifespan_stats():
+        cutoff = gv.simulation_time - 60.0
+        for species_name, records in list(gv.lifespan_stats.items()):
+            recent_records = [
+                record for record in records
+                if record[0] >= cutoff
+            ]
+            if recent_records:
+                gv.lifespan_stats[species_name] = recent_records
+            else:
+                del gv.lifespan_stats[species_name]
+
+    @staticmethod
+    def _get_average_lifespan(species_name):
+        UI._prune_lifespan_stats()
+        stats = gv.lifespan_stats.get(species_name)
+        if not stats:
+            return None
+        return sum(age for _, age in stats) / len(stats)
 
     @staticmethod
     def _truncate_text(font, text, max_width):
@@ -261,6 +291,32 @@ class UI(pg.sprite.Sprite):
                 history.append(float(current_values.get(species_name, 0)))
                 if len(history) > max_samples:
                     del history[:len(history) - max_samples]
+
+    def _sample_lifespan_history(self):
+        sample_time = gv.simulation_time
+        last_sample_time = getattr(self, "lifespan_history_sample_time", sample_time)
+        elapsed = sample_time - last_sample_time
+        if elapsed < 0:
+            self.lifespan_history_sample_time = sample_time
+            return
+        if elapsed < self.history_interval:
+            return
+
+        self.lifespan_history_sample_time = sample_time
+        histories = getattr(self, "species_lifespan_history", None)
+        if histories is None:
+            histories = self.species_lifespan_history = {}
+        max_samples = int(self.history_duration / self.history_interval) + 1
+        for species_name in self._get_species():
+            average_lifespan = self._get_average_lifespan(species_name)
+            if average_lifespan is None:
+                histories.pop(species_name, None)
+                continue
+
+            history = histories.setdefault(species_name, [])
+            history.append(average_lifespan)
+            if len(history) > max_samples:
+                del history[:len(history) - max_samples]
 
     def _sample_species_populations(self, dt, species_counts=None):
         self.species_history_elapsed += dt
@@ -540,6 +596,7 @@ class UI(pg.sprite.Sprite):
         return y + tab_height + 14
 
     def _draw_biology_data(self, panel_rect, species_counts=None):
+        self.lifespan_row_rect = None
         species = self._get_species()
         species_names = sorted(species)
         if not species_names:
@@ -569,15 +626,6 @@ class UI(pg.sprite.Sprite):
         chart_height = min(210, chart_bottom - 228)
         content_bottom = chart_bottom - chart_height - 8
 
-        for gene, average in sorted(gene_averages.items()):
-            if row_y + 24 > content_bottom:
-                return
-            value_text = f"{average:.6f}"
-            label = self._truncate_text(self.detail_font, f"{gene}: {value_text}", content_width)
-            text = self.detail_font.render(label, True, (230, 230, 230))
-            self.display_surface.blit(text, (content_x, row_y))
-            row_y += 28
-
         row_y += 4
         pg.draw.line(
             self.display_surface,
@@ -587,13 +635,50 @@ class UI(pg.sprite.Sprite):
             1,
         )
         row_y += 8
-        for label, attribute in (("Avg ATP", "atp"), ("Avg Nutrition", "nutrition"), ("Avg Mass", "mass")):
+        for label, value in (
+            ("Avg ATP", f"{population_averages['atp']:.1f}"),
+            ("Avg Nutrition", f"{population_averages['nutrition']:.1f}"),
+            ("Avg Mass", f"{population_averages['mass']:.1f}"),
+        ):
             if row_y + 20 > content_bottom:
                 break
-            value = population_averages[attribute]
-            text = self.detail_font.render(f"{label}: {value:.1f}", True, (150, 210, 190))
+            text = self.detail_font.render(f"{label}: {value}", True, (150, 210, 190))
             self.display_surface.blit(text, (content_x, row_y))
             row_y += 22
+
+        average_lifespan = self._get_average_lifespan(self.selected_species)
+        lifespan_text = (
+            f"{average_lifespan:.1f} ticks" if average_lifespan is not None else "n/a"
+        )
+        self.lifespan_row_rect = None
+        if row_y + 20 <= content_bottom:
+            text = self.detail_font.render(
+                f"Avg Lifespan: {lifespan_text}",
+                True,
+                (150, 210, 190),
+            )
+            self.display_surface.blit(text, (content_x, row_y))
+            self.lifespan_row_rect = pg.Rect(
+                content_x,
+                row_y - 2,
+                content_width,
+                text.get_height() + 4,
+            )
+            row_y += 28
+
+        if row_y + 24 <= content_bottom:
+            text = self.detail_font.render("Average genes", True, (220, 235, 240))
+            self.display_surface.blit(text, (content_x, row_y))
+            row_y += 24
+
+        for gene, average in sorted(gene_averages.items()):
+            if row_y + 24 > content_bottom:
+                return
+            value_text = f"{average:.6f}"
+            label = self._truncate_text(self.detail_font, f"{gene}: {value_text}", content_width)
+            text = self.detail_font.render(label, True, (230, 230, 230))
+            self.display_surface.blit(text, (content_x, row_y))
+            row_y += 28
 
     def _draw_species_population_chart(self, panel_rect):
         history = self.species_population_history.get(self.selected_species, [])
@@ -603,6 +688,21 @@ class UI(pg.sprite.Sprite):
             history=history,
             title=f"{self.selected_species} population",
         )
+
+    def _draw_species_lifespan_chart(self, panel_rect):
+        history = getattr(self, "species_lifespan_history", {}).get(self.selected_species, [])
+        self._draw_metric_chart(
+            "Avg Lifespan",
+            panel_rect,
+            history=history,
+            title=f"{self.selected_species} average lifespan",
+        )
+
+    def _is_lifespan_row_hovered(self, mouse_pos=None):
+        row_rect = getattr(self, "lifespan_row_rect", None)
+        if row_rect is None:
+            return False
+        return row_rect.collidepoint(mouse_pos or pg.mouse.get_pos())
 
     def handle_event(self, event):
         if event.type == pg.MOUSEWHEEL:
@@ -653,6 +753,7 @@ class UI(pg.sprite.Sprite):
         species_metrics = self._get_species_metrics()
         species_counts = species_metrics["EntityCnt"]
         self._sample_species_populations(dt, species_counts)
+        self._sample_lifespan_history()
         metrics = self._get_overall_metrics(species_counts)
         self._sample_metrics(metrics, species_metrics)
         self._draw_toolbar()
@@ -674,7 +775,10 @@ class UI(pg.sprite.Sprite):
             self.chart_rect = None
             self._draw_biology_data(panel_rect, species_counts)
             if self.selected_species is not None:
-                self._draw_species_population_chart(panel_rect)
+                if self._is_lifespan_row_hovered():
+                    self._draw_species_lifespan_chart(panel_rect)
+                else:
+                    self._draw_species_population_chart(panel_rect)
 
         self.update(dt)
         self._draw_hover_info()

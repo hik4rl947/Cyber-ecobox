@@ -47,6 +47,9 @@ class Game:
         for _ in range(INITIAL_GRASS_COUNT):
             self.spawn_random_entity(Producer)
 
+        for _ in range(INITIAL_CARNIVORE_COUNT):
+            self.spawn_random_entity(Carnivore)
+
         grass_count = sum(
             isinstance(sprite, Producer) for sprite in self.move.all_sprites
         )
@@ -64,6 +67,8 @@ class Game:
         gv.bioMass = 0
         gv.entCnt = 0
         gv.creatureCnt = 0
+        gv.lifespan_stats.clear()
+        gv.simulation_time = 0.0
         self.bio_accumulator = 0.0
         self.grass_spawn_elapsed = 0.0
         self.ui.reset_history()
@@ -157,6 +162,7 @@ class Game:
             self.move.cameray = max(self.move.camera_sizey / 2, self.move.cameray - 2)
 
     def _advance_simulation(self, dt):
+        gv.simulation_time += dt
         self._update_grass_spawning(dt)
         self._update_camera()
         self.bio_accumulator += dt
@@ -181,6 +187,8 @@ class Game:
         for sprite in sprites:
             if isinstance(sprite, Herbivorous):
                 sprite.tick(population_centers[sprite], grass_index, herd_index, predators)
+            elif isinstance(sprite, Carnivore):
+                sprite.tick(herbivores)
             elif hasattr(sprite, "tick"):
                 sprite.tick()
         gv.bioMass = sum(
